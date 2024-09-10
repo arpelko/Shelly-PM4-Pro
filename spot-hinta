@@ -1,0 +1,103 @@
+let Region = "FI"; // See supported regions in Swagger documentation: https://api.spot-hinta.fi/swagger/ui
+let Relay1 = "0"; // Number of the first relay
+let Relay2 = "1"; // Number of the second relay
+let CheapestHours1 = "6";  // Cheapest hours for the first relay
+let CheapestHours2 = "4";  // Cheapest hours for the second relay
+let OnlyNightHours = false; // Cheapest hours only during night (22:00 - 07:00)?
+let PriceAlwaysAllowed = "0"; // Price at which the relay can ALWAYS be on. Use "-999" to disable.
+let BackupHours = [3, 4, 5, 6]; // Backup hours if internet connection fails
+let Inverted1 = false; // Invert logic for the first relay
+let Inverted2 = false; // Invert logic for the second relay
+
+print("Script has started successfully. The first relay action happens in 30 seconds.");
+let cHour = ""; 
+let Executed1 = false; 
+let Executed2 = false; 
+let urlToCall1 = ""; 
+let urlToCall2 = ""; 
+let previousAction1 = ""; 
+let previousAction2 = ""; 
+let invertedOn1 = "true"; 
+let invertedOff1 = "false";
+let invertedOn2 = "true"; 
+let invertedOff2 = "false";
+
+// Handle inversion logic for both relays
+if (Inverted1 === true) { invertedOn1 = "false"; invertedOff1 = "true"; }
+if (Inverted2 === true) { invertedOn2 = "false"; invertedOff2 = "true"; }
+
+// Define URLs for both relays
+if (OnlyNightHours == false) { 
+    urlToCall1 = "https://api.spot-hinta.fi/JustNowRank/" + CheapestHours1 + "/" + PriceAlwaysAllowed + "?region=" + Region; 
+    urlToCall2 = "https://api.spot-hinta.fi/JustNowRank/" + CheapestHours2 + "/" + PriceAlwaysAllowed + "?region=" + Region;
+    print("Urls to be used: " + urlToCall1 + " and " + urlToCall2); 
+} else { 
+    urlToCall1 = "https://api.spot-hinta.fi/JustNowRankNight?rank=" + CheapestHours1 + "&priceAlwaysAllowed=" + PriceAlwaysAllowed + "&region=" + Region;
+    urlToCall2 = "https://api.spot-hinta.fi/JustNowRankNight?rank=" + CheapestHours2 + "&priceAlwaysAllowed=" + PriceAlwaysAllowed + "&region=" + Region;
+    print("Urls to be used: " + urlToCall1 + " and " + urlToCall2);
+}
+
+// Timer for relay actions
+Timer.set(30000, true, function () {
+    let hour = new Date().getHours();
+    if (cHour !== hour) { 
+        cHour = hour; 
+        Executed1 = false; 
+        Executed2 = false; 
+        print("The hour has now changed and a new relay action is going to be performed.");
+    }
+    if (Executed1 === true && Executed2 === true) { 
+        print("This hour has already been executed for both relays. Waiting for an hour change.");
+        return; 
+    }
+
+    // Fetch control for the first relay
+    if (!Executed1) {
+        Shelly.call("HTTP.GET", { url: urlToCall1, timeout: 15, ssl_ca: "*" }, function(result, error_code) {
+            RunResponse(result, error_code, Relay1, previousAction1, invertedOn1, invertedOff1, function(newState) {
+                Executed1 = newState;
+            });
+        });
+    }
+
+    // Fetch control for the second relay
+    if (!Executed2) {
+        Shelly.call("HTTP.GET", { url: urlToCall2, timeout: 15, ssl_ca: "*" }, function(result, error_code) {
+            RunResponse(result, error_code, Relay2, previousAction2, invertedOn2, invertedOff2, function(newState) {
+                Executed2 = newState;
+            });
+        });
+    }
+});
+
+function RunResponse(result, error_code, relay, previousAction, invertedOn, invertedOff, setExecuted) {
+    if (error_code === 0 && result !== null) {
+        if (result.code === 400 && previousAction !== result.code) { 
+            Shelly.call("Switch.Set", "{ id:" + relay + ", on:" + invertedOff + "}", null, null); 
+            previousAction = result.code; 
+            print("Turning relay OFF (ON - if inverted). Hour is too expensive."); 
+            setExecuted(true); 
+            return; 
+        }
+        if (result.code === 200 && previousAction !== result.code) { 
+            Shelly.call("Switch.Set", "{ id:" + relay + ", on:" + invertedOn + "}", null, null); 
+            previousAction = result.code; 
+            print("Turning relay ON (OFF - if inverted). Hour is cheap enough."); 
+            setExecuted(true); 
+            return; 
+        }
+    }
+
+    // If fetching data failed, check if the hour is a backup hour
+    if (BackupHours.indexOf(cHour) > -1) { 
+        Shelly.call("Switch.Set", "{ id:" + relay + ", on:" + invertedOn + "}", null, null); 
+        print("Error while fetching control information. Relay is turned ON (OFF - if inverted), because it is a backup hour."); 
+        setExecuted(true); 
+        return; 
+    }
+
+    // Only turn off the relay if it is not a backup hour and there is an error
+    Shelly.call("Switch.Set", "{ id:" + relay + ", on:" + invertedOff + "}", null, null); 
+    print("Error while fetching control information. Relay is turned OFF (ON - if inverted), because it is not a backup hour."); 
+    setExecuted(true);
+}
